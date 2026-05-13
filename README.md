@@ -47,6 +47,24 @@ To compensate for camera gimbal rotations and UAV maneuvers, our LSTM and GRU tr
 
 ---
 
+## LSTM Core Architecture and Inference Cycle
+
+### Network Layout
+The `RichLSTMTracker` consists of a two-layer stacked LSTM cell followed by a two-layer fully connected regression head:
+*   **Recurrent Block**: `nn.LSTM(input_size=12, hidden_size=128, num_layers=2)`
+*   **Temporal Slicing**: Isolates the cumulative memory at the very last step (`lstm_out[:, -1, :]`) to yield `[Batch, 128]`.
+*   **Linear Block**: `nn.Linear(128, 64) -> nn.ReLU() -> nn.Linear(64, 4)`. Matches the pre-trained checkpoint mapping down to `[dx_pred, dy_pred, w_pred, h_pred]`.
+
+### The 10-Frame Window Logic
+To propagate motion accurately, each track executes a 5-step sequence pipeline every frame:
+1.  **Data Accumulation**: The track buffer accumulates up to **10 absolute frames**: `[x, y, w, h, telemetry...]`.
+2.  **Velocity Encoding**: The adjacent frame vectors are subtracted, translating coordinates into **9 relative velocity steps**: $V_n = F_{n+1} - F_n$ for the first two dimensions. Remaining variables are copied statically.
+3.  **Domain Normalization**: The 9 vectors are passed through the training-locked `scaler.pkl` file to standardize feature magnitudes without re-fitting.
+4.  **Linear Projection**: The normalized tensor of shape `(1, 9, 12)` is pushed into the GPU, executing inference under `with torch.no_grad()` to suppress memory footprints.
+5.  **Dimensional Padding & Recovery**: Because the model predicts 4 variables but the scaler requires 12 inputs for `inverse_transform`, the predictions are seated in a 12-D row of zeroes, scaled back to physical pixels, and added to the last known absolute coordinates to recover the absolute target box for the upcoming frame.
+
+---
+
 ## Benchmark Comparison Matrix
 
 | Pipeline Attribute | Heavy Implementation | Light Implementation |
